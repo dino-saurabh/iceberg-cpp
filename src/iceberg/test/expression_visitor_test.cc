@@ -17,6 +17,8 @@
  * under the License.
  */
 
+#include "iceberg/expression/expression_visitor.h"
+
 #include <chrono>
 #include <format>
 #include <limits>
@@ -29,6 +31,7 @@
 
 #include "iceberg/expression/binder.h"
 #include "iceberg/expression/expressions.h"
+#include "iceberg/expression/predicate.h"
 #include "iceberg/expression/rewrite_not.h"
 #include "iceberg/expression/sanitize_expression.h"
 #include "iceberg/result.h"
@@ -1069,6 +1072,81 @@ TEST_F(ReferenceVisitorTest, AllFields) {
   EXPECT_EQ(refs.count(3), 1);  // age field
   EXPECT_EQ(refs.count(4), 1);  // salary field
   EXPECT_EQ(refs.count(5), 1);  // active field
+}
+
+// Evaluates a predicate on "t" as true, on "f" as false, and fails on "err".
+// Records the names of the visited predicates.
+class RecordingEvaluator : public ExpressionVisitor<bool> {
+ public:
+  Result<bool> AlwaysTrue() override { return true; }
+  Result<bool> AlwaysFalse() override { return false; }
+  Result<bool> Not(bool child_result) override { return !child_result; }
+  Result<bool> And(bool left_result, bool right_result) override {
+    return left_result && right_result;
+  }
+  Result<bool> Or(bool left_result, bool right_result) override {
+    return left_result || right_result;
+  }
+  Result<bool> Predicate(const std::shared_ptr<BoundPredicate>& pred) override {
+    return NotSupported("Unexpected bound predicate: {}", pred->ToString());
+  }
+  Result<bool> Predicate(const std::shared_ptr<UnboundPredicate>& pred) override {
+    std::string name(pred->reference()->name());
+    visited.push_back(name);
+    if (name == "err") {
+      return InvalidExpression("Predicate failed: {}", name);
+    }
+    return name == "t";
+  }
+
+  std::vector<std::string> visited;
+};
+
+TEST(VisitEvaluatorTest, AndSkipsRightWhenLeftIsFalse) {
+  RecordingEvaluator visitor;
+  auto expr = Expressions::And(Expressions::IsNull("f"), Expressions::IsNull("t"));
+  EXPECT_THAT(VisitEvaluator(expr, visitor), HasValue(::testing::Eq(false)));
+  EXPECT_EQ(visitor.visited, std::vector<std::string>{"f"});
+}
+
+TEST(VisitEvaluatorTest, OrSkipsRightWhenLeftIsTrue) {
+  RecordingEvaluator visitor;
+  auto expr = Expressions::Or(Expressions::IsNull("t"), Expressions::IsNull("f"));
+  EXPECT_THAT(VisitEvaluator(expr, visitor), HasValue(::testing::Eq(true)));
+  EXPECT_EQ(visitor.visited, std::vector<std::string>{"t"});
+}
+
+TEST(VisitEvaluatorTest, VisitsRightWhenLeftDoesNotDecide) {
+  {
+    RecordingEvaluator visitor;
+    auto expr = Expressions::And(Expressions::IsNull("t"), Expressions::IsNull("f"));
+    EXPECT_THAT(VisitEvaluator(expr, visitor), HasValue(::testing::Eq(false)));
+    EXPECT_EQ(visitor.visited, (std::vector<std::string>{"t", "f"}));
+  }
+  {
+    RecordingEvaluator visitor;
+    auto expr = Expressions::Or(Expressions::IsNull("f"), Expressions::IsNull("t"));
+    EXPECT_THAT(VisitEvaluator(expr, visitor), HasValue(::testing::Eq(true)));
+    EXPECT_EQ(visitor.visited, (std::vector<std::string>{"f", "t"}));
+  }
+}
+
+TEST(VisitEvaluatorTest, SkippedErrorIsNotReported) {
+  RecordingEvaluator visitor;
+  auto skipped = Expressions::And(Expressions::IsNull("f"), Expressions::IsNull("err"));
+  EXPECT_THAT(VisitEvaluator(skipped, visitor), HasValue(::testing::Eq(false)));
+
+  auto visited = Expressions::And(Expressions::IsNull("t"), Expressions::IsNull("err"));
+  EXPECT_THAT(VisitEvaluator(visited, visitor), IsError(ErrorKind::kInvalidExpression));
+}
+
+TEST(VisitEvaluatorTest, ShortCircuitsNestedExpressions) {
+  RecordingEvaluator visitor;
+  auto expr = Expressions::Or(Expressions::Not(Expressions::And(
+                                  Expressions::IsNull("f"), Expressions::IsNull("err"))),
+                              Expressions::IsNull("err"));
+  EXPECT_THAT(VisitEvaluator(expr, visitor), HasValue(::testing::Eq(true)));
+  EXPECT_EQ(visitor.visited, std::vector<std::string>{"f"});
 }
 
 }  // namespace iceberg

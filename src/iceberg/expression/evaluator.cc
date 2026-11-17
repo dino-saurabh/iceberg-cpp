@@ -153,7 +153,7 @@ Result<std::unique_ptr<Evaluator>> Evaluator::Make(const Schema& schema,
 
 Result<bool> Evaluator::Evaluate(const StructLike& row) const {
   EvalVisitor visitor(row);
-  return Visit<bool, EvalVisitor>(bound_expr_, visitor);
+  return VisitEvaluator(bound_expr_, visitor);
 }
 
 }  // namespace iceberg

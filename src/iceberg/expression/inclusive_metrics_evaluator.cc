@@ -558,7 +558,7 @@ Result<bool> InclusiveMetricsEvaluator::Evaluate(const DataFile& data_file) cons
     return kRowsMightMatch;
   }
   InclusiveMetricsVisitor visitor(data_file);
-  return Visit<bool, InclusiveMetricsVisitor>(expr_, visitor);
+  return VisitEvaluator(expr_, visitor);
 }
 
 }  // namespace iceberg
